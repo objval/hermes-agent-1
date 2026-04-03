@@ -343,9 +343,11 @@ def test_cmd_update_retries_optional_extras_individually_when_all_fails(monkeypa
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
             return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
+        if cmd == ["git", "rev-parse", "HEAD"]:
+            return SimpleNamespace(stdout="abc123\n", stderr="", returncode=0)
         if cmd == ["git", "rev-list", "HEAD..origin/main", "--count"]:
             return SimpleNamespace(stdout="1\n", stderr="", returncode=0)
-        if cmd == ["git", "pull", "origin", "main"]:
+        if cmd in (["git", "pull", "origin", "main"], ["git", "pull", "--ff-only", "origin", "main"]):
             return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
         if cmd == ["/usr/bin/uv", "pip", "install", "-e", ".[all]", "--quiet"]:
             raise CalledProcessError(returncode=1, cmd=cmd)
@@ -388,9 +390,11 @@ def test_cmd_update_succeeds_with_extras(monkeypatch, tmp_path):
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
             return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
+        if cmd == ["git", "rev-parse", "HEAD"]:
+            return SimpleNamespace(stdout="abc123\n", stderr="", returncode=0)
         if cmd == ["git", "rev-list", "HEAD..origin/main", "--count"]:
             return SimpleNamespace(stdout="1\n", stderr="", returncode=0)
-        if cmd == ["git", "pull", "origin", "main"]:
+        if cmd in (["git", "pull", "origin", "main"], ["git", "pull", "--ff-only", "origin", "main"]):
             return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
         return SimpleNamespace(returncode=0)
 

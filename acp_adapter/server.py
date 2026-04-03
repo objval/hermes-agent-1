@@ -498,7 +498,7 @@ class HermesACPAgent(acp.Agent):
                     new_provider=new_provider
                 )
             except Exception:
-                pass  # Hooks are best-effort
+                logger.debug("Failed to invoke on_model_change hook in ACP /model", exc_info=True)  # Hooks are best-effort
         
         state.model = new_model
         state.agent = self.session_manager._make_agent(

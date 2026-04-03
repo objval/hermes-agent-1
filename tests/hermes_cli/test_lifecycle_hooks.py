@@ -55,7 +55,6 @@ class TestOnModelChangeHook:
     def test_hook_fired_on_provider_change(self, mock_invoke):
         """Hook should fire when provider changes in _update_config_for_provider."""
         from hermes_cli.auth import _update_config_for_provider
-        from hermes_cli.profiles import get_config_path
         
         # Create a temp config file
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -66,7 +65,7 @@ class TestOnModelChangeHook:
             
             with patch("hermes_cli.auth.get_config_path", return_value=config_path):
                 # Switch to anthropic provider
-                _update_config_for_provider("anthropic", default_model="claude-opus-4")
+                _update_config_for_provider("anthropic", "", default_model="claude-opus-4")
                 
                 # Verify hook was called with correct provider change
                 mock_invoke.assert_called_once()
@@ -274,7 +273,7 @@ class TestGatewayModelChangeHook:
     @patch("hermes_cli.plugins.invoke_hook")
     def test_hook_not_fired_when_no_change_gateway(self, mock_invoke):
         """Hook should NOT fire in gateway when model/provider unchanged."""
-        from acp_adapter.server import SessionState, GatewayRequestHandler
+        from acp_adapter.server import HermesACPAgent
         
         # Create mock session state
         state = MagicMock()
@@ -289,7 +288,7 @@ class TestGatewayModelChangeHook:
         session_manager = MagicMock()
         
         # Create handler and call _cmd_model with same model
-        handler = GatewayRequestHandler.__new__(GatewayRequestHandler)
+        handler = HermesACPAgent.__new__(HermesACPAgent)
         handler.session_manager = session_manager
         
         # Call with same model (no change)
@@ -301,7 +300,7 @@ class TestGatewayModelChangeHook:
     @patch("hermes_cli.plugins.invoke_hook")
     def test_hook_fired_on_model_change_gateway(self, mock_invoke):
         """Hook should fire in gateway when model changes."""
-        from acp_adapter.server import SessionState, GatewayRequestHandler
+        from acp_adapter.server import HermesACPAgent
         
         # Create mock session state with openai
         state = MagicMock()
@@ -319,7 +318,7 @@ class TestGatewayModelChangeHook:
         session_manager._make_agent.return_value = new_agent
         
         # Create handler
-        handler = GatewayRequestHandler.__new__(GatewayRequestHandler)
+        handler = HermesACPAgent.__new__(HermesACPAgent)
         handler.session_manager = session_manager
         
         # Mock parse_model_input to return different provider

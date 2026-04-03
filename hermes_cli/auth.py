@@ -2138,7 +2138,10 @@ def _update_config_for_provider(
                 new_provider=provider_id or "unknown"
             )
         except Exception:
-            pass  # Hooks are best-effort
+            logger.debug(
+                "Failed to invoke on_model_change hook in _update_config_for_provider",
+                exc_info=True,
+            )  # Hooks are best-effort
     
     return config_path
 
@@ -2294,8 +2297,8 @@ def _save_model_choice(model_id: str, old_model_id: str = "", old_provider: str 
                 new_provider=new_prov or "unknown"
             )
         except Exception:
-            # Hooks are best-effort; don't fail model save if hook fails
-            pass
+            # Hooks are best-effort; don't fail model save if hook dispatch fails.
+            logger.debug("Failed to invoke on_model_change hook in _save_model_choice", exc_info=True)
 
 
 def login_command(args) -> None:

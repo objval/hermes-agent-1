@@ -3236,13 +3236,13 @@ def _run_post_update_hooks(
             print()
             if hooks_ran:
                 print("→ Running post-update scripts...")
-            _run_post_update_scripts(
+            scripts_executed = _run_post_update_scripts(
                 update_status=update_status,
                 prev_version=prev_version,
                 new_version=new_version,
                 commits_count=commits_count,
             )
-            scripts_ran = True
+            scripts_ran = scripts_executed > 0
     
     # Summary line if nothing ran (helps with debugging)
     if not hooks_ran and not scripts_ran:
@@ -3255,19 +3255,22 @@ def _run_post_update_scripts(
     prev_version: str,
     new_version: str,
     commits_count: int,
-) -> None:
+) -> int:
     """Run executable scripts from ~/.hermes/post-update.d/
     
     Scripts are sorted alphabetically and receive context via environment variables.
     Each script must have the executable bit set (chmod +x) to run.
     Each script has a 5-minute timeout. Failures are logged but don't block other scripts.
     Script output is streamed to the console so users can see notifications.
+
+    Returns:
+        Number of scripts that were attempted (executed).
     """
     from hermes_cli.profiles import _get_default_hermes_home
     
     scripts_dir = _get_default_hermes_home() / "post-update.d"
     if not scripts_dir.exists():
-        return
+        return 0
     
     # Find executable scripts (must have executable bit set)
     scripts = []
@@ -3280,7 +3283,7 @@ def _run_post_update_scripts(
             scripts.append(path)
     
     if not scripts:
-        return
+        return 0
     
     print(f"  Found {len(scripts)} post-update script(s)")
     
@@ -3296,6 +3299,7 @@ def _run_post_update_scripts(
         "HERMES_SCRIPTS_DIR": str(scripts_dir),
     }
     
+    scripts_executed = 0
     for script in scripts:
         script_name = script.name
         try:
@@ -3313,6 +3317,7 @@ def _run_post_update_scripts(
                 cmd = ["ruby", str(script)]
             
             # Run script with output visible to console (no capture_output)
+            scripts_executed += 1
             result = subprocess.run(
                 cmd,
                 cwd=PROJECT_ROOT,
@@ -3333,6 +3338,8 @@ def _run_post_update_scripts(
             logger.warning("Post-update script %s timed out after 5 minutes", script_name)
         except Exception as exc:
             logger.debug("Post-update script %s failed: %s", script_name, exc)
+
+    return scripts_executed
 
 
 def cmd_update(args):
@@ -3364,6 +3371,21 @@ def cmd_update(args):
             new_version=new_sha or prev_sha,
             commits_count=commit_count,
         )
+
+    def _run_zip_update_with_hooks() -> None:
+        try:
+            _update_via_zip(args)
+        except (SystemExit, Exception):
+            _emit_failed_post_update_hook()
+            raise
+
+        if not getattr(args, "no_hooks", False):
+            _run_post_update_hooks(
+                update_status="success",
+                prev_version=prev_sha,
+                new_version="",  # ZIP update may not have a reliable SHA
+                commits_count=0,
+            )
     
     # Try git-based update first, fall back to ZIP download on Windows
     # when git file I/O is broken (antivirus, NTFS filter drivers, etc.)
@@ -3376,6 +3398,7 @@ def cmd_update(args):
         else:
             print("✗ Not a git repository. Please reinstall:")
             print("  curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash")
+            _emit_failed_post_update_hook()
             sys.exit(1)
     
     # On Windows, git can fail with "unable to write loose object file: Invalid argument"
@@ -3412,27 +3435,8 @@ def cmd_update(args):
             prev_sha = prev_sha_result.stdout.strip()
         except Exception:
             prev_sha = ""
-        
-        try:
-            _update_via_zip(args)
-            # Run post-update hooks on success
-            if not getattr(args, 'no_hooks', False):
-                _run_post_update_hooks(
-                    update_status="success",
-                    prev_version=prev_sha,
-                    new_version=None,  # ZIP update doesn't give us SHA easily
-                    commits_count=None,
-                )
-        except Exception:
-            # Run post-update hooks on failure
-            if not getattr(args, 'no_hooks', False):
-                _run_post_update_hooks(
-                    update_status="failed",
-                    prev_version=prev_sha,
-                    new_version=None,
-                    commits_count=None,
-                )
-            raise
+
+        _run_zip_update_with_hooks()
         return
 
     # Fetch and pull
@@ -3907,7 +3911,7 @@ def cmd_update(args):
             print(f"⚠ Git update failed: {e}")
             print("→ Falling back to ZIP download...")
             print()
-            _update_via_zip(args)
+            _run_zip_update_with_hooks()
         else:
             print(f"✗ Update failed: {e}")
             _emit_failed_post_update_hook()
