@@ -2099,6 +2099,10 @@ def _update_config_for_provider(
     else:
         model_cfg = {}
 
+    # Capture old provider/model BEFORE updating for hook context
+    old_provider = model_cfg.get("provider", "auto") if isinstance(model_cfg, dict) else "auto"
+    old_model = model_cfg.get("default", "") if isinstance(model_cfg, dict) else ""
+    
     model_cfg["provider"] = provider_id
     if inference_base_url and inference_base_url.strip():
         model_cfg["base_url"] = inference_base_url.rstrip("/")
@@ -2113,23 +2117,23 @@ def _update_config_for_provider(
         cur_default = model_cfg.get("default", "")
         if not cur_default or "/" in cur_default:
             model_cfg["default"] = default_model
-
-    # Get old provider/model before updating for hook context
-    old_provider = model_cfg.get("provider", "auto") if isinstance(model_cfg, dict) else "auto"
-    old_model = model_cfg.get("default", "") if isinstance(model_cfg, dict) else ""
     
     config["model"] = model_cfg
 
     config_path.write_text(yaml.safe_dump(config, sort_keys=False))
     
-    # Fire on_model_change hook when provider changes (model may be empty during switch)
-    if old_provider != provider_id:
+    # Fire on_model_change hook when provider or model changes
+    new_model = model_cfg.get("default", old_model) or "unknown"
+    provider_changed = old_provider != provider_id
+    model_changed = old_model != new_model
+    
+    if provider_changed or model_changed:
         try:
             from hermes_cli.plugins import invoke_hook
             invoke_hook(
                 "on_model_change",
                 old_model=old_model or "unknown",
-                new_model=model_cfg.get("default", old_model) or "unknown",
+                new_model=new_model,
                 old_provider=old_provider or "unknown",
                 new_provider=provider_id or "unknown"
             )
@@ -2276,18 +2280,22 @@ def _save_model_choice(model_id: str, old_model_id: str = "", old_provider: str 
     
     save_config(config)
     
-    # Fire on_model_change hook with old and new model info
-    try:
-        invoke_hook(
-            "on_model_change",
-            old_model=old_model or "unknown",
-            new_model=model_id,
-            old_provider=old_prov or "unknown",
-            new_provider=new_prov or "unknown"
-        )
-    except Exception:
-        # Hooks are best-effort; don't fail model save if hook fails
-        pass
+    # Fire on_model_change hook only when model or provider actually changed
+    model_changed = old_model != model_id
+    provider_changed = old_prov != new_prov
+    
+    if model_changed or provider_changed:
+        try:
+            invoke_hook(
+                "on_model_change",
+                old_model=old_model or "unknown",
+                new_model=model_id,
+                old_provider=old_prov or "unknown",
+                new_provider=new_prov or "unknown"
+            )
+        except Exception:
+            # Hooks are best-effort; don't fail model save if hook fails
+            pass
 
 
 def login_command(args) -> None:

@@ -3259,7 +3259,9 @@ def _run_post_update_scripts(
     """Run executable scripts from ~/.hermes/post-update.d/
     
     Scripts are sorted alphabetically and receive context via environment variables.
+    Each script must have the executable bit set (chmod +x) to run.
     Each script has a 5-minute timeout. Failures are logged but don't block other scripts.
+    Script output is streamed to the console so users can see notifications.
     """
     from hermes_cli.profiles import _get_default_hermes_home
     
@@ -3267,19 +3269,14 @@ def _run_post_update_scripts(
     if not scripts_dir.exists():
         return
     
-    # Find executable scripts (files that are executable or have shebang extensions)
+    # Find executable scripts (must have executable bit set)
     scripts = []
     for path in sorted(scripts_dir.iterdir()):
         if not path.is_file() or path.name.startswith("."):
             continue
         
-        # Check if executable by owner
-        is_executable = os.access(path, os.X_OK)
-        
-        # Or has a recognized extension
-        has_shebang_ext = path.suffix in {".sh", ".py", ".js", ".pl", ".rb"}
-        
-        if is_executable or has_shebang_ext:
+        # Require executable bit (aligns with "executable scripts" in docs)
+        if os.access(path, os.X_OK):
             scripts.append(path)
     
     if not scripts:
@@ -3287,14 +3284,16 @@ def _run_post_update_scripts(
     
     print(f"  Found {len(scripts)} post-update script(s)")
     
-    # Prepare environment for scripts
+    # Prepare environment for scripts (use default home for consistency with scripts_dir)
+    default_home = _get_default_hermes_home()
     env = {
         **os.environ,
         "HERMES_UPDATE_STATUS": update_status,
         "HERMES_PREV_VERSION": prev_version or "",
         "HERMES_NEW_VERSION": new_version or "",
         "HERMES_COMMITS_COUNT": str(commits_count),
-        "HERMES_HOME": str(get_hermes_home()),
+        "HERMES_HOME": str(default_home),
+        "HERMES_SCRIPTS_DIR": str(scripts_dir),
     }
     
     for script in scripts:
@@ -3313,11 +3312,11 @@ def _run_post_update_scripts(
             elif script.suffix == ".rb":
                 cmd = ["ruby", str(script)]
             
+            # Run script with output visible to console (no capture_output)
             result = subprocess.run(
                 cmd,
                 cwd=PROJECT_ROOT,
                 env=env,
-                capture_output=True,
                 text=True,
                 timeout=300,  # 5 minute timeout per script
             )
@@ -3326,10 +3325,9 @@ def _run_post_update_scripts(
                 logger.debug("Post-update script %s completed successfully", script_name)
             else:
                 logger.warning(
-                    "Post-update script %s exited with code %d: %s",
+                    "Post-update script %s exited with code %d",
                     script_name,
                     result.returncode,
-                    result.stderr[:200] if result.stderr else ""
                 )
         except subprocess.TimeoutExpired:
             logger.warning("Post-update script %s timed out after 5 minutes", script_name)

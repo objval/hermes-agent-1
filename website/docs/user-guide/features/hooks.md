@@ -327,20 +327,25 @@ In addition to plugin hooks, Hermes supports running **executable scripts** from
 
 ### Supported Script Types
 
-| Type | Detection | Requirements |
-|------|-----------|--------------|
-| Shell (bash/sh) | `.sh`/`.bash` extension or `#!/bin/bash` shebang | Bash installed |
-| Python | `.py` extension or `#!/usr/bin/env python3` shebang | Python 3 installed |
-| Node.js | `.js` extension or `#!/usr/bin/env node` shebang | Node.js installed |
-| Perl | `.pl` extension | Perl installed |
-| Ruby | `.rb` extension | Ruby installed |
-| Binary | Executable bit set (`chmod +x`) | None (runs directly) |
+Scripts must have the **executable bit set** (`chmod +x`) to run. The following extensions are recognized and run with the appropriate interpreter:
+
+| Type | Extension | Interpreter | Requirements |
+|------|-----------|-------------|--------------|
+| Shell | `.sh` | `bash` | Bash installed |
+| Python | `.py` | `python3` | Python 3 installed |
+| Node.js | `.js` | `node` | Node.js installed |
+| Perl | `.pl` | `perl` | Perl installed |
+| Ruby | `.rb` | `ruby` | Ruby installed |
+| Binary | any | direct | Executable bit set, no extension needed |
 
 ### Example: Notification Script
 
+Create the script with the shebang on the first line:
+
 ```bash
-# ~/.hermes/post-update.d/01-notify.sh
 #!/bin/bash
+# ~/.hermes/post-update.d/01-notify.sh
+
 if [ "$HERMES_UPDATE_STATUS" = "success" ]; then
     echo "✅ Hermes updated: ${HERMES_PREV_VERSION:0:8} → ${HERMES_NEW_VERSION:0:8}"
     echo "   Pulled $HERMES_COMMITS_COUNT commit(s)"
@@ -355,8 +360,9 @@ chmod +x ~/.hermes/post-update.d/01-notify.sh
 ### Example: Node.js Script
 
 ```javascript
-// ~/.hermes/post-update.d/02-log.js
 #!/usr/bin/env node
+// ~/.hermes/post-update.d/02-log.js
+
 console.log(`Update status: ${process.env.HERMES_UPDATE_STATUS}`);
 console.log(`Commits: ${process.env.HERMES_COMMITS_COUNT}`);
 ```

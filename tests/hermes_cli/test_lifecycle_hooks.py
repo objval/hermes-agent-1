@@ -51,33 +51,48 @@ class TestHookRegistration:
 class TestOnModelChangeHook:
     """Test on_model_change hook invocations."""
 
-    @patch("hermes_cli.plugins.invoke_hook")
+    @patch("hermes_cli.auth.invoke_hook")
     def test_hook_fired_on_provider_change(self, mock_invoke):
         """Hook should fire when provider changes in _update_config_for_provider."""
-        # Test the hook is called with correct parameters when provider changes
-        from hermes_cli.plugins import invoke_hook
+        from hermes_cli.auth import _update_config_for_provider
+        from hermes_cli.profiles import get_config_path
         
-        # Simulate what _update_config_for_provider does when provider changes
-        old_provider = "openai"
-        new_provider = "anthropic"
-        
-        if old_provider != new_provider:
-            invoke_hook(
-                "on_model_change",
-                old_model="gpt-4",
-                new_model="claude-opus-4",
-                old_provider=old_provider,
-                new_provider=new_provider
-            )
-        
-        # Verify hook was called
-        mock_invoke.assert_called_once()
-        call_args = mock_invoke.call_args
-        assert call_args[0][0] == "on_model_change"
-        assert call_args[1]["old_provider"] == "openai"
-        assert call_args[1]["new_provider"] == "anthropic"
+        # Create a temp config file
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "config.yaml"
+            
+            # Write initial config with openai provider
+            config_path.write_text("model:\n  provider: openai\n  default: gpt-4\n")
+            
+            with patch("hermes_cli.auth.get_config_path", return_value=config_path):
+                # Switch to anthropic provider
+                _update_config_for_provider("anthropic", default_model="claude-opus-4")
+                
+                # Verify hook was called with correct provider change
+                mock_invoke.assert_called_once()
+                call_kwargs = mock_invoke.call_args[1]
+                assert call_kwargs["old_provider"] == "openai"
+                assert call_kwargs["new_provider"] == "anthropic"
 
-    @patch("hermes_cli.plugins.invoke_hook")
+    @patch("hermes_cli.auth.invoke_hook")
+    def test_hook_not_fired_when_no_change(self, mock_invoke):
+        """Hook should NOT fire when provider/model unchanged."""
+        from hermes_cli.auth import _save_model_choice
+
+        # Setup: mock config with same model
+        with patch("hermes_cli.config.load_config") as mock_load:
+            with patch("hermes_cli.config.save_config"):
+                mock_load.return_value = {
+                    "model": {"provider": "openai", "default": "gpt-4"}
+                }
+                
+                # Save same model (no change)
+                _save_model_choice("gpt-4")
+                
+                # Hook should NOT be called when no actual change
+                mock_invoke.assert_not_called()
+
+    @patch("hermes_cli.auth.invoke_hook")
     def test_hook_fired_on_model_save(self, mock_invoke):
         """Hook should fire when model is saved via _save_model_choice."""
         from hermes_cli.auth import _save_model_choice
@@ -134,8 +149,9 @@ class TestPostUpdateHook:
         assert "project_root" in call_kwargs
 
     @patch("hermes_cli.profiles._get_default_hermes_home")
-    def test_script_execution_from_post_update_d(self, mock_home):
-        """Scripts from post-update.d should be executed."""
+    @patch("subprocess.run")
+    def test_script_execution_from_post_update_d(self, mock_subprocess, mock_home):
+        """Scripts from post-update.d should be executed with correct env vars."""
         from hermes_cli.main import _run_post_update_scripts
 
         # Create temp scripts directory
@@ -149,35 +165,88 @@ class TestPostUpdateHook:
             script.write_text("#!/bin/bash\necho 'Test script ran'")
             script.chmod(0o755)
 
-            # Run scripts - should not raise
+            # Run scripts
             _run_post_update_scripts(
                 update_status="success",
                 prev_version="abc",
                 new_version="def",
                 commits_count=1
             )
+            
+            # Verify subprocess.run was called with correct args
+            mock_subprocess.assert_called_once()
+            call_args = mock_subprocess.call_args
+            assert call_args[0][0][0] == "bash"
+            assert "01-test.sh" in call_args[0][0][1]
+            
+            # Verify environment variables were set
+            env = call_args[1]["env"]
+            assert env["HERMES_UPDATE_STATUS"] == "success"
+            assert env["HERMES_PREV_VERSION"] == "abc"
+            assert env["HERMES_NEW_VERSION"] == "def"
+            assert env["HERMES_COMMITS_COUNT"] == "1"
 
-    def test_no_hooks_does_not_run_scripts(self):
-        """When --no-hooks flag is set, scripts should not run."""
-        # This is tested via the cmd_update flow with mocked args
-        pass
+    @patch("hermes_cli.profiles._get_default_hermes_home")
+    def test_non_executable_scripts_skipped(self, mock_home):
+        """Scripts without executable bit should be skipped."""
+        from hermes_cli.main import _run_post_update_scripts
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scripts_dir = Path(tmpdir) / "post-update.d"
+            scripts_dir.mkdir()
+            mock_home.return_value = Path(tmpdir)
+
+            # Create a non-executable script
+            script = scripts_dir / "01-test.sh"
+            script.write_text("#!/bin/bash\necho 'Test'")
+            # No chmod - not executable
+            
+            with patch("subprocess.run") as mock_run:
+                _run_post_update_scripts(
+                    update_status="success",
+                    prev_version="abc",
+                    new_version="def",
+                    commits_count=1
+                )
+                # subprocess.run should NOT be called for non-executable script
+                mock_run.assert_not_called()
 
 
 class TestPostUpdateScriptsEnvironment:
     """Test that scripts receive correct environment variables."""
 
-    def test_environment_variables_set(self):
+    @patch("hermes_cli.profiles._get_default_hermes_home")
+    @patch("subprocess.run")
+    def test_environment_variables_propagated(self, mock_subprocess, mock_home):
         """Scripts should receive HERMES_UPDATE_STATUS, HERMES_PREV_VERSION, etc."""
-        expected_vars = [
-            "HERMES_UPDATE_STATUS",
-            "HERMES_PREV_VERSION",
-            "HERMES_NEW_VERSION",
-            "HERMES_COMMITS_COUNT",
-            "HERMES_HOME"
-        ]
-        
-        for var in expected_vars:
-            assert var.startswith("HERMES_")
+        from hermes_cli.main import _run_post_update_scripts
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scripts_dir = Path(tmpdir) / "post-update.d"
+            scripts_dir.mkdir()
+            mock_home.return_value = Path(tmpdir)
+
+            script = scripts_dir / "01-test.sh"
+            script.write_text("#!/bin/bash\necho 'test'")
+            script.chmod(0o755)
+
+            _run_post_update_scripts(
+                update_status="failed",
+                prev_version="old-sha",
+                new_version="new-sha",
+                commits_count=3
+            )
+
+            # Get the environment passed to subprocess
+            env = mock_subprocess.call_args[1]["env"]
+            
+            # Verify all expected env vars are present
+            assert env["HERMES_UPDATE_STATUS"] == "failed"
+            assert env["HERMES_PREV_VERSION"] == "old-sha"
+            assert env["HERMES_NEW_VERSION"] == "new-sha"
+            assert env["HERMES_COMMITS_COUNT"] == "3"
+            assert "HERMES_HOME" in env
+            assert "HERMES_SCRIPTS_DIR" in env
 
 
 class TestHookErrorHandling:
@@ -197,6 +266,75 @@ class TestHookErrorHandling:
                 
                 # Config should still be saved
                 mock_save.assert_called_once()
+
+
+class TestGatewayModelChangeHook:
+    """Test on_model_change hook in gateway /model command."""
+
+    @patch("hermes_cli.plugins.invoke_hook")
+    def test_hook_not_fired_when_no_change_gateway(self, mock_invoke):
+        """Hook should NOT fire in gateway when model/provider unchanged."""
+        from acp_adapter.server import SessionState, GatewayRequestHandler
+        
+        # Create mock session state
+        state = MagicMock()
+        state.model = "gpt-4"
+        state.agent = MagicMock()
+        state.agent.model = "gpt-4"
+        state.agent.provider = "openai"
+        state.session_id = "test-session"
+        state.cwd = "/tmp"
+        
+        # Create mock session manager
+        session_manager = MagicMock()
+        
+        # Create handler and call _cmd_model with same model
+        handler = GatewayRequestHandler.__new__(GatewayRequestHandler)
+        handler.session_manager = session_manager
+        
+        # Call with same model (no change)
+        result = handler._cmd_model("gpt-4", state)
+        
+        # Hook should NOT be called when no actual change
+        mock_invoke.assert_not_called()
+
+    @patch("hermes_cli.plugins.invoke_hook")
+    def test_hook_fired_on_model_change_gateway(self, mock_invoke):
+        """Hook should fire in gateway when model changes."""
+        from acp_adapter.server import SessionState, GatewayRequestHandler
+        
+        # Create mock session state with openai
+        state = MagicMock()
+        state.model = "gpt-4"
+        state.agent = MagicMock()
+        state.agent.model = "gpt-4"
+        state.agent.provider = "openai"
+        state.session_id = "test-session"
+        state.cwd = "/tmp"
+        
+        # Create mock session manager
+        session_manager = MagicMock()
+        new_agent = MagicMock()
+        new_agent.provider = "anthropic"
+        session_manager._make_agent.return_value = new_agent
+        
+        # Create handler
+        handler = GatewayRequestHandler.__new__(GatewayRequestHandler)
+        handler.session_manager = session_manager
+        
+        # Mock parse_model_input to return different provider
+        with patch("hermes_cli.models.parse_model_input", return_value=("anthropic", "claude-opus-4")):
+            with patch("hermes_cli.models.detect_provider_for_model", return_value=None):
+                # Call with different model
+                result = handler._cmd_model("claude-opus-4", state)
+                
+                # Hook should be called
+                mock_invoke.assert_called_once()
+                call_kwargs = mock_invoke.call_args[1]
+                assert call_kwargs["old_model"] == "gpt-4"
+                assert call_kwargs["new_model"] == "claude-opus-4"
+                assert call_kwargs["old_provider"] == "openai"
+                assert call_kwargs["new_provider"] == "anthropic"
 
 
 if __name__ == "__main__":
