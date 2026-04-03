@@ -479,27 +479,11 @@ class HermesACPAgent(acp.Agent):
         except Exception:
             logger.debug("Provider detection failed, using model as-is", exc_info=True)
 
-        # Fire on_model_change hook only when model or provider actually changes
+        # Capture previous state for hook context.
         old_model = state.model or getattr(state.agent, "model", "unknown")
         old_provider = getattr(state.agent, "provider", None) or current_provider or "unknown"
-        new_provider = target_provider or current_provider or "unknown"
-        
-        model_changed = old_model != new_model
-        provider_changed = old_provider != new_provider
-        
-        if model_changed or provider_changed:
-            try:
-                from hermes_cli.plugins import invoke_hook
-                invoke_hook(
-                    "on_model_change",
-                    old_model=old_model,
-                    new_model=new_model,
-                    old_provider=old_provider,
-                    new_provider=new_provider
-                )
-            except Exception:
-                logger.debug("Failed to invoke on_model_change hook in ACP /model", exc_info=True)  # Hooks are best-effort
-        
+
+        # Apply model/provider switch first.
         state.model = new_model
         state.agent = self.session_manager._make_agent(
             session_id=state.session_id,
@@ -508,7 +492,31 @@ class HermesACPAgent(acp.Agent):
             requested_provider=target_provider or current_provider,
         )
         self.session_manager.save_session(state.session_id)
-        provider_label = getattr(state.agent, "provider", None) or target_provider or current_provider
+
+        provider_from_agent = getattr(state.agent, "provider", None)
+        if isinstance(provider_from_agent, str) and provider_from_agent.strip():
+            provider_label = provider_from_agent
+        else:
+            provider_label = target_provider or current_provider
+        final_provider = provider_label or "unknown"
+
+        # Fire on_model_change hook only when model or provider actually changed,
+        # and only after the switch has succeeded.
+        model_changed = old_model != new_model
+        provider_changed = old_provider != final_provider
+        if model_changed or provider_changed:
+            try:
+                from hermes_cli.plugins import invoke_hook
+                invoke_hook(
+                    "on_model_change",
+                    old_model=old_model,
+                    new_model=new_model,
+                    old_provider=old_provider,
+                    new_provider=final_provider,
+                )
+            except Exception:
+                logger.debug("Failed to invoke on_model_change hook in ACP /model", exc_info=True)  # Hooks are best-effort
+
         logger.info("Session %s: model switched to %s", state.session_id, new_model)
         return f"Model switched to: {new_model}\nProvider: {provider_label}"
 

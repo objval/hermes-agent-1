@@ -7,19 +7,17 @@ These tests verify:
 4. Post-update hook execution with plugin callbacks and scripts
 """
 
-import os
 import sys
-import subprocess
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 import pytest
 
 # Add project root to path
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from hermes_cli.plugins import VALID_HOOKS, PluginManager, PluginContext
+from hermes_cli.plugins import VALID_HOOKS
 
 
 class TestHookRegistration:
