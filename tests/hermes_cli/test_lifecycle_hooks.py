@@ -51,7 +51,7 @@ class TestHookRegistration:
 class TestOnModelChangeHook:
     """Test on_model_change hook invocations."""
 
-    @patch("hermes_cli.auth.invoke_hook")
+    @patch("hermes_cli.plugins.invoke_hook")
     def test_hook_fired_on_provider_change(self, mock_invoke):
         """Hook should fire when provider changes in _update_config_for_provider."""
         from hermes_cli.auth import _update_config_for_provider
@@ -74,7 +74,7 @@ class TestOnModelChangeHook:
                 assert call_kwargs["old_provider"] == "openai"
                 assert call_kwargs["new_provider"] == "anthropic"
 
-    @patch("hermes_cli.auth.invoke_hook")
+    @patch("hermes_cli.plugins.invoke_hook")
     def test_hook_not_fired_when_no_change(self, mock_invoke):
         """Hook should NOT fire when provider/model unchanged."""
         from hermes_cli.auth import _save_model_choice
@@ -92,7 +92,7 @@ class TestOnModelChangeHook:
                 # Hook should NOT be called when no actual change
                 mock_invoke.assert_not_called()
 
-    @patch("hermes_cli.auth.invoke_hook")
+    @patch("hermes_cli.plugins.invoke_hook")
     def test_hook_fired_on_model_save(self, mock_invoke):
         """Hook should fire when model is saved via _save_model_choice."""
         from hermes_cli.auth import _save_model_choice

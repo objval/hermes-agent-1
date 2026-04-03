@@ -382,7 +382,8 @@ Scripts receive these environment variables:
 | `HERMES_PREV_VERSION` | Git SHA before update (or empty) |
 | `HERMES_NEW_VERSION` | Git SHA after update (or empty) |
 | `HERMES_COMMITS_COUNT` | Number of commits pulled |
-| `HERMES_HOME` | Path to Hermes home directory |
+| `HERMES_HOME` | Path to Hermes home directory (default: `~/.hermes`) |
+| `HERMES_SCRIPTS_DIR` | Path to the `post-update.d` scripts directory |
 
 ### Ordering
 
@@ -400,7 +401,8 @@ Scripts run in alphabetical order by filename. Use numeric prefixes to control o
 
 - **Non-fatal**: Script failures don't block the update or other scripts
 - **Timeout**: Each script gets 5 minutes, then is killed
-- **Logging**: Exit codes and stderr output are logged
+- **Output**: Scripts inherit the parent output streams (stdout/stderr visible in terminal)
+- **Logging**: Exit codes are logged for debugging
 
 ### Skipping Scripts
 

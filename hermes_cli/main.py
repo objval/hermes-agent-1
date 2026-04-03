@@ -3402,7 +3402,37 @@ def cmd_update(args):
 
     if use_zip_update:
         # ZIP-based update for Windows when git is broken
-        _update_via_zip(args)
+        # Capture SHA before update for hook context
+        try:
+            prev_sha_result = subprocess.run(
+                git_cmd + ["rev-parse", "HEAD"],
+                cwd=PROJECT_ROOT,
+                capture_output=True, text=True, check=True,
+            )
+            prev_sha = prev_sha_result.stdout.strip()
+        except Exception:
+            prev_sha = ""
+        
+        try:
+            _update_via_zip(args)
+            # Run post-update hooks on success
+            if not getattr(args, 'no_hooks', False):
+                _run_post_update_hooks(
+                    update_status="success",
+                    prev_version=prev_sha,
+                    new_version=None,  # ZIP update doesn't give us SHA easily
+                    commits_count=None,
+                )
+        except Exception:
+            # Run post-update hooks on failure
+            if not getattr(args, 'no_hooks', False):
+                _run_post_update_hooks(
+                    update_status="failed",
+                    prev_version=prev_sha,
+                    new_version=None,
+                    commits_count=None,
+                )
+            raise
         return
 
     # Fetch and pull
