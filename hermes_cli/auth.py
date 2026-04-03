@@ -2123,17 +2123,18 @@ def _update_config_for_provider(
     config_path.write_text(yaml.safe_dump(config, sort_keys=False))
     
     # Fire on_model_change hook when provider or model changes
-    new_model = model_cfg.get("default", old_model) or "unknown"
+    # Compare raw model values to avoid false positives when both are empty.
+    new_model_raw = model_cfg.get("default", "")
     provider_changed = old_provider != provider_id
-    model_changed = old_model != new_model
-    
+    model_changed = old_model != new_model_raw
+
     if provider_changed or model_changed:
         try:
             from hermes_cli.plugins import invoke_hook
             invoke_hook(
                 "on_model_change",
                 old_model=old_model or "unknown",
-                new_model=new_model,
+                new_model=new_model_raw or "unknown",
                 old_provider=old_provider or "unknown",
                 new_provider=provider_id or "unknown"
             )

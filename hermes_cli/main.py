@@ -3916,6 +3916,9 @@ def cmd_update(args):
             print(f"✗ Update failed: {e}")
             _emit_failed_post_update_hook()
             sys.exit(1)
+    except Exception:
+        _emit_failed_post_update_hook()
+        raise
 
 
 def _coalesce_session_name_args(argv: list) -> list:
