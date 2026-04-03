@@ -325,6 +325,8 @@ In addition to plugin hooks, Hermes supports running **executable scripts** from
 3. Scripts run automatically after each update, sorted alphabetically by filename
 4. Each script receives update context via environment variables
 
+> **Profile note:** Scripts are always discovered from the **default Hermes home** (`~/.hermes/post-update.d`) via `_get_default_hermes_home()`, even when using a profile (`~/.hermes/profiles/<name>`).
+
 ### Supported Script Types
 
 Scripts must have the **executable bit set** (`chmod +x`) to run. The following extensions are recognized and run with the appropriate interpreter:
@@ -382,7 +384,7 @@ Scripts receive these environment variables:
 | `HERMES_PREV_VERSION` | Git SHA before update (or empty) |
 | `HERMES_NEW_VERSION` | Git SHA after update (or empty) |
 | `HERMES_COMMITS_COUNT` | Number of commits pulled |
-| `HERMES_HOME` | Path to Hermes home directory (default: `~/.hermes`) |
+| `HERMES_HOME` | Path to default Hermes home directory (`~/.hermes`, not profile-specific) |
 | `HERMES_SCRIPTS_DIR` | Path to the `post-update.d` scripts directory |
 
 ### Ordering

@@ -36,7 +36,7 @@ def _make_run_side_effect(branch="main", verify_ok=True, commit_count="0"):
 
 @pytest.fixture
 def mock_args():
-    return SimpleNamespace()
+    return SimpleNamespace(no_hooks=False)
 
 
 class TestCmdUpdateBranchFallback:
@@ -105,6 +105,43 @@ class TestCmdUpdateBranchFallback:
         commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
         pull_cmds = [c for c in commands if "pull" in c]
         assert len(pull_cmds) == 0
+
+    @patch("shutil.which", return_value=None)
+    @patch("hermes_cli.main._run_post_update_scripts")
+    @patch("hermes_cli.main._run_post_update_hooks")
+    @patch("subprocess.run")
+    def test_update_no_hooks_flag_skips_all_post_update_automation(
+        self,
+        mock_run,
+        mock_hooks,
+        mock_scripts,
+        _mock_which,
+        mock_args,
+    ):
+        mock_args.no_hooks = True
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main", verify_ok=True, commit_count="0"
+        )
+
+        cmd_update(mock_args)
+
+        mock_hooks.assert_not_called()
+        mock_scripts.assert_not_called()
+
+    @patch("hermes_cli.main._run_post_update_hooks")
+    def test_update_managed_install_emits_failed_post_update_hook(self, mock_hooks, mock_args):
+        with patch("hermes_cli.config.is_managed", return_value=True), patch(
+            "hermes_cli.config.managed_error"
+        ) as mock_managed_error:
+            cmd_update(mock_args)
+
+        mock_managed_error.assert_called_once_with("update Hermes Agent")
+        mock_hooks.assert_called_once_with(
+            update_status="failed",
+            prev_version="",
+            new_version="",
+            commits_count=0,
+        )
 
     def test_update_non_interactive_skips_migration_prompt(self, mock_args, capsys):
         """When stdin/stdout aren't TTYs, config migration prompt is skipped."""

@@ -3349,6 +3349,14 @@ def cmd_update(args):
 
     if is_managed():
         managed_error("update Hermes Agent")
+        # Keep post_update behavior consistent for managed installs too.
+        if not getattr(args, "no_hooks", False):
+            _run_post_update_hooks(
+                update_status="failed",
+                prev_version="",
+                new_version="",
+                commits_count=0,
+            )
         return
     
     print("⚕ Updating Hermes Agent...")
