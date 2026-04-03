@@ -58,6 +58,8 @@ VALID_HOOKS: Set[str] = {
     "post_llm_call",
     "on_session_start",
     "on_session_end",
+    "on_model_change",  # Called when model or provider changes
+    "post_update",  # Called after hermes update completes
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"

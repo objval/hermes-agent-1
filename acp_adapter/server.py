@@ -479,6 +479,23 @@ class HermesACPAgent(acp.Agent):
         except Exception:
             logger.debug("Provider detection failed, using model as-is", exc_info=True)
 
+        # Fire on_model_change hook (gateway model switch)
+        old_model = state.model or getattr(state.agent, "model", "unknown")
+        old_provider = getattr(state.agent, "provider", None) or current_provider or "unknown"
+        new_provider = target_provider or current_provider or "unknown"
+        
+        try:
+            from hermes_cli.plugins import invoke_hook
+            invoke_hook(
+                "on_model_change",
+                old_model=old_model,
+                new_model=new_model,
+                old_provider=old_provider,
+                new_provider=new_provider
+            )
+        except Exception:
+            pass  # Hooks are best-effort
+        
         state.model = new_model
         state.agent = self.session_manager._make_agent(
             session_id=state.session_id,

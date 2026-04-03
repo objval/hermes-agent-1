@@ -3177,6 +3177,166 @@ def _install_python_dependencies_with_optional_fallback(
         print(f"  ⚠ Skipped optional extras that still failed: {', '.join(failed_extras)}")
 
 
+def _run_post_update_hooks(
+    *,
+    update_status: str,
+    prev_version: str,
+    new_version: str,
+    commits_count: int,
+) -> None:
+    """Run post-update hooks: plugin callbacks and executable scripts.
+    
+    Args:
+        update_status: "success", "failed", or "no_changes"
+        prev_version: Git SHA before update (or empty string)
+        new_version: Git SHA after update (or empty string)
+        commits_count: Number of commits pulled
+    """
+    from hermes_constants import get_hermes_home
+    
+    hooks_ran = False
+    scripts_ran = False
+    
+    # 1. Run plugin hooks first
+    try:
+        from hermes_cli.plugins import invoke_hook, get_plugin_manager, discover_plugins
+        
+        discover_plugins()
+        
+        mgr = get_plugin_manager()
+        # Access _hooks directly - this is internal but consistent with other
+        # hook checks in the codebase. A public has_hook() API would be ideal.
+        callbacks = mgr._hooks.get("post_update", [])
+        if callbacks:
+            print()
+            print("→ Running post-update plugin hook(s)...")
+            
+            invoke_hook(
+                "post_update",
+                update_status=update_status,
+                prev_version=prev_version,
+                new_version=new_version,
+                commits_count=commits_count,
+                hermes_home=str(get_hermes_home()),
+                project_root=str(PROJECT_ROOT),
+            )
+            print(f"  ✓ {len(callbacks)} post-update hook(s) executed")
+            hooks_ran = True
+    except Exception as exc:
+        logger.debug("Plugin system not available for post_update hook: %s", exc)
+    
+    # 2. Run executable scripts from post-update.d (for all users)
+    # Use _get_default_hermes_home() to find scripts in main Hermes home,
+    # not in the active profile directory (HERMES_HOME may point to profile)
+    from hermes_cli.profiles import _get_default_hermes_home
+    scripts_dir = _get_default_hermes_home() / "post-update.d"
+    if scripts_dir.exists():
+        script_count = len([p for p in scripts_dir.iterdir() if p.is_file() and not p.name.startswith(".")])
+        if script_count > 0:
+            print()
+            if hooks_ran:
+                print("→ Running post-update scripts...")
+            _run_post_update_scripts(
+                update_status=update_status,
+                prev_version=prev_version,
+                new_version=new_version,
+                commits_count=commits_count,
+            )
+            scripts_ran = True
+    
+    # Summary line if nothing ran (helps with debugging)
+    if not hooks_ran and not scripts_ran:
+        logger.debug("No post-update hooks or scripts found")
+
+
+def _run_post_update_scripts(
+    *,
+    update_status: str,
+    prev_version: str,
+    new_version: str,
+    commits_count: int,
+) -> None:
+    """Run executable scripts from ~/.hermes/post-update.d/
+    
+    Scripts are sorted alphabetically and receive context via environment variables.
+    Each script has a 5-minute timeout. Failures are logged but don't block other scripts.
+    """
+    from hermes_cli.profiles import _get_default_hermes_home
+    
+    scripts_dir = _get_default_hermes_home() / "post-update.d"
+    if not scripts_dir.exists():
+        return
+    
+    # Find executable scripts (files that are executable or have shebang extensions)
+    scripts = []
+    for path in sorted(scripts_dir.iterdir()):
+        if not path.is_file() or path.name.startswith("."):
+            continue
+        
+        # Check if executable by owner
+        is_executable = os.access(path, os.X_OK)
+        
+        # Or has a recognized extension
+        has_shebang_ext = path.suffix in {".sh", ".py", ".js", ".pl", ".rb"}
+        
+        if is_executable or has_shebang_ext:
+            scripts.append(path)
+    
+    if not scripts:
+        return
+    
+    print(f"  Found {len(scripts)} post-update script(s)")
+    
+    # Prepare environment for scripts
+    env = {
+        **os.environ,
+        "HERMES_UPDATE_STATUS": update_status,
+        "HERMES_PREV_VERSION": prev_version or "",
+        "HERMES_NEW_VERSION": new_version or "",
+        "HERMES_COMMITS_COUNT": str(commits_count),
+        "HERMES_HOME": str(get_hermes_home()),
+    }
+    
+    for script in scripts:
+        script_name = script.name
+        try:
+            # Determine interpreter based on extension
+            cmd = [str(script)]
+            if script.suffix == ".py":
+                cmd = [sys.executable, str(script)]
+            elif script.suffix == ".js":
+                cmd = ["node", str(script)]
+            elif script.suffix == ".sh":
+                cmd = ["bash", str(script)]
+            elif script.suffix == ".pl":
+                cmd = ["perl", str(script)]
+            elif script.suffix == ".rb":
+                cmd = ["ruby", str(script)]
+            
+            result = subprocess.run(
+                cmd,
+                cwd=PROJECT_ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=300,  # 5 minute timeout per script
+            )
+            
+            if result.returncode == 0:
+                logger.debug("Post-update script %s completed successfully", script_name)
+            else:
+                logger.warning(
+                    "Post-update script %s exited with code %d: %s",
+                    script_name,
+                    result.returncode,
+                    result.stderr[:200] if result.stderr else ""
+                )
+        except subprocess.TimeoutExpired:
+            logger.warning("Post-update script %s timed out after 5 minutes", script_name)
+        except Exception as exc:
+            logger.debug("Post-update script %s failed: %s", script_name, exc)
+
+
 def cmd_update(args):
     """Update Hermes Agent to the latest version."""
     import shutil
@@ -3188,6 +3348,24 @@ def cmd_update(args):
     
     print("⚕ Updating Hermes Agent...")
     print()
+    
+    # Context tracked across update paths for post_update hook payloads.
+    prev_sha = ""
+    new_sha = ""
+    commit_count = 0
+    failed_hook_emitted = False
+
+    def _emit_failed_post_update_hook() -> None:
+        nonlocal failed_hook_emitted
+        if failed_hook_emitted or getattr(args, "no_hooks", False):
+            return
+        failed_hook_emitted = True
+        _run_post_update_hooks(
+            update_status="failed",
+            prev_version=prev_sha,
+            new_version=new_sha or prev_sha,
+            commits_count=commit_count,
+        )
     
     # Try git-based update first, fall back to ZIP download on Windows
     # when git file I/O is broken (antivirus, NTFS filter drivers, etc.)
@@ -3250,6 +3428,7 @@ def cmd_update(args):
                 print(f"✗ Failed to fetch updates from origin.")
                 if stderr:
                     print(f"  {stderr.splitlines()[0]}")
+            _emit_failed_post_update_hook()
             sys.exit(1)
 
         # Get current branch (returns literal "HEAD" when detached)
@@ -3261,6 +3440,16 @@ def cmd_update(args):
             check=True,
         )
         current_branch = result.stdout.strip()
+
+        # Capture current SHA before update for hook context
+        prev_sha_result = subprocess.run(
+            git_cmd + ["rev-parse", "HEAD"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        prev_sha = prev_sha_result.stdout.strip()
 
         # Always update against main
         branch = "main"
@@ -3307,6 +3496,15 @@ def cmd_update(args):
                     cwd=PROJECT_ROOT, capture_output=True, text=True, check=False,
                 )
             print("✓ Already up to date!")
+            
+            # Run post-update hooks even when up to date (allows periodic checks)
+            if not getattr(args, 'no_hooks', False):
+                _run_post_update_hooks(
+                    update_status="no_changes",
+                    prev_version=prev_sha,
+                    new_version=prev_sha,
+                    commits_count=0,
+                )
             return
 
         print(f"→ Found {commit_count} new commit(s)")
@@ -3336,6 +3534,7 @@ def cmd_update(args):
                     if reset_result.stderr.strip():
                         print(f"  {reset_result.stderr.strip()}")
                     print("  Try manually: git fetch origin && git reset --hard origin/main")
+                    _emit_failed_post_update_hook()
                     sys.exit(1)
             update_succeeded = True
         finally:
@@ -3354,6 +3553,16 @@ def cmd_update(args):
                     )
         
         _invalidate_update_cache()
+
+        # Capture new SHA after successful pull for hook context
+        new_sha_result = subprocess.run(
+            git_cmd + ["rev-parse", "HEAD"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        new_sha = new_sha_result.stdout.strip()
 
         # Clear stale .pyc bytecode cache — prevents ImportError on gateway
         # restart when updated source references names that didn't exist in
@@ -3656,6 +3865,15 @@ def cmd_update(args):
         print("Tip: You can now select a provider and model:")
         print("  hermes model              # Select provider and model")
         
+        # Run post-update hooks unless --no-hooks flag was passed
+        if not getattr(args, 'no_hooks', False):
+            _run_post_update_hooks(
+                update_status="success",
+                prev_version=prev_sha,
+                new_version=new_sha,
+                commits_count=commit_count,
+            )
+        
     except subprocess.CalledProcessError as e:
         if sys.platform == "win32":
             print(f"⚠ Git update failed: {e}")
@@ -3664,6 +3882,7 @@ def cmd_update(args):
             _update_via_zip(args)
         else:
             print(f"✗ Update failed: {e}")
+            _emit_failed_post_update_hook()
             sys.exit(1)
 
 
@@ -5278,6 +5497,11 @@ For more help on a command:
         "update",
         help="Update Hermes Agent to the latest version",
         description="Pull the latest changes from git and reinstall dependencies"
+    )
+    update_parser.add_argument(
+        "--no-hooks",
+        action="store_true",
+        help="Skip post-update hook execution"
     )
     update_parser.set_defaults(func=cmd_update)
     

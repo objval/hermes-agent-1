@@ -233,6 +233,59 @@ def register(ctx):
 | `post_llm_call` | After LLM API response | `session_id`, `user_message`, `assistant_response`, `conversation_history`, `model`, `platform` |
 | `on_session_start` | Session begins | `session_id`, `model`, `platform` |
 | `on_session_end` | Session ends | `session_id`, `completed`, `interrupted`, `model`, `platform` |
+| `on_model_change` | Model or provider changes | `old_model`, `new_model`, `old_provider`, `new_provider` |
+| `post_update` | After `hermes update` completes | `update_status`, `prev_version`, `new_version`, `commits_count`, `hermes_home`, `project_root` |
+
+#### Post-Update Hook
+
+The `post_update` hook fires after `hermes update` completes, regardless of whether the update succeeded, failed, or made no changes.
+
+```python
+def register(ctx):
+    ctx.register_hook("post_update", on_update)
+
+def on_update(update_status, prev_version, new_version, commits_count, hermes_home, project_root):
+    if update_status == "success":
+        print(f"Updated {prev_version[:8]} → {new_version[:8]} ({commits_count} commits)")
+```
+
+**Parameters:**
+- `update_status` — `"success"`, `"failed"`, or `"no_changes"`
+- `prev_version` — Git SHA before update (or empty string)
+- `new_version` — Git SHA after update (or empty string)
+- `commits_count` — Number of commits pulled
+- `hermes_home` — Path to Hermes home directory
+- `project_root` — Path to Hermes installation
+
+:::tip
+The `post_update` hook also runs **executable scripts** from `~/.hermes/post-update.d/` — see [Post-Update Scripts](#post-update-scripts) below.
+:::
+
+#### Model Change Hook
+
+The `on_model_change` hook fires whenever the active model or provider changes (via `hermes model`, `hermes use`, or gateway `/model` command).
+
+```python
+def register(ctx):
+    ctx.register_hook("on_model_change", on_model_change)
+
+def on_model_change(old_model, new_model, old_provider, new_provider):
+    """React to model/provider switches."""
+    print(f"🔄 Model changed: {old_provider}/{old_model} → {new_provider}/{new_model}")
+    
+    # Example: Notify companion agents via shared memory
+    if old_provider != new_provider:
+        print(f"   Provider switched from {old_provider} to {new_provider}")
+    
+    # Example: Log to external system
+    # requests.post("https://api.example.com/log", json={...})
+```
+
+**Parameters:**
+- `old_model` — Previous model identifier (e.g., "gpt-4o")
+- `new_model` — New model identifier (e.g., "claude-sonnet-4")
+- `old_provider` — Previous provider (e.g., "openai")
+- `new_provider` — New provider (e.g., "anthropic")
 
 Callbacks receive keyword arguments matching the columns above:
 
@@ -258,3 +311,105 @@ def register(ctx):
 ```
 
 See the **[Plugins guide](/docs/user-guide/features/plugins)** for full details on creating plugins.
+
+---
+
+## Post-Update Scripts
+
+In addition to plugin hooks, Hermes supports running **executable scripts** from `~/.hermes/post-update.d/` after `hermes update` completes. This is useful for automation that doesn't require a full Python plugin.
+
+### How It Works
+
+1. Create the directory: `mkdir -p ~/.hermes/post-update.d`
+2. Drop executable scripts into it (bash, Python, Node.js, or any compiled binary)
+3. Scripts run automatically after each update, sorted alphabetically by filename
+4. Each script receives update context via environment variables
+
+### Supported Script Types
+
+| Type | Detection | Requirements |
+|------|-----------|--------------|
+| Shell (bash/sh) | `.sh`/`.bash` extension or `#!/bin/bash` shebang | Bash installed |
+| Python | `.py` extension or `#!/usr/bin/env python3` shebang | Python 3 installed |
+| Node.js | `.js` extension or `#!/usr/bin/env node` shebang | Node.js installed |
+| Perl | `.pl` extension | Perl installed |
+| Ruby | `.rb` extension | Ruby installed |
+| Binary | Executable bit set (`chmod +x`) | None (runs directly) |
+
+### Example: Notification Script
+
+```bash
+# ~/.hermes/post-update.d/01-notify.sh
+#!/bin/bash
+if [ "$HERMES_UPDATE_STATUS" = "success" ]; then
+    echo "✅ Hermes updated: ${HERMES_PREV_VERSION:0:8} → ${HERMES_NEW_VERSION:0:8}"
+    echo "   Pulled $HERMES_COMMITS_COUNT commit(s)"
+fi
+```
+
+Make it executable:
+```bash
+chmod +x ~/.hermes/post-update.d/01-notify.sh
+```
+
+### Example: Node.js Script
+
+```javascript
+// ~/.hermes/post-update.d/02-log.js
+#!/usr/bin/env node
+console.log(`Update status: ${process.env.HERMES_UPDATE_STATUS}`);
+console.log(`Commits: ${process.env.HERMES_COMMITS_COUNT}`);
+```
+
+Make it executable:
+```bash
+chmod +x ~/.hermes/post-update.d/02-log.js
+```
+
+### Environment Variables
+
+Scripts receive these environment variables:
+
+| Variable | Value |
+|----------|-------|
+| `HERMES_UPDATE_STATUS` | `"success"` \| `"failed"` \| `"no_changes"` |
+| `HERMES_PREV_VERSION` | Git SHA before update (or empty) |
+| `HERMES_NEW_VERSION` | Git SHA after update (or empty) |
+| `HERMES_COMMITS_COUNT` | Number of commits pulled |
+| `HERMES_HOME` | Path to Hermes home directory |
+
+### Ordering
+
+Scripts run in alphabetical order by filename. Use numeric prefixes to control order:
+
+```
+~/.hermes/post-update.d/
+├── 01-check-dependencies.sh
+├── 02-sync-config.py
+├── 03-restart-gateway.sh
+└── 99-notify-discord.js
+```
+
+### Error Handling
+
+- **Non-fatal**: Script failures don't block the update or other scripts
+- **Timeout**: Each script gets 5 minutes, then is killed
+- **Logging**: Exit codes and stderr output are logged
+
+### Skipping Scripts
+
+Use the `--no-hooks` flag to skip all post-update automation (both plugin hooks and scripts):
+
+```bash
+hermes update --no-hooks
+```
+
+### Comparison: Scripts vs. Plugins
+
+| Feature | Scripts | Plugins |
+|---------|---------|---------|
+| Installation | Drop files in `post-update.d/` | Install via `hermes plugins install` |
+| Language | Any executable | Python only |
+| Access to Hermes internals | ❌ No | ✅ Yes |
+| Can modify agent behavior | ❌ No | ✅ Yes |
+| Best for | Simple automation | Complex logic, API calls, state management |

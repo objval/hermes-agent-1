@@ -2114,9 +2114,28 @@ def _update_config_for_provider(
         if not cur_default or "/" in cur_default:
             model_cfg["default"] = default_model
 
+    # Get old provider/model before updating for hook context
+    old_provider = model_cfg.get("provider", "auto") if isinstance(model_cfg, dict) else "auto"
+    old_model = model_cfg.get("default", "") if isinstance(model_cfg, dict) else ""
+    
     config["model"] = model_cfg
 
     config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+    
+    # Fire on_model_change hook when provider changes (model may be empty during switch)
+    if old_provider != provider_id:
+        try:
+            from hermes_cli.plugins import invoke_hook
+            invoke_hook(
+                "on_model_change",
+                old_model=old_model or "unknown",
+                new_model=model_cfg.get("default", old_model) or "unknown",
+                old_provider=old_provider or "unknown",
+                new_provider=provider_id or "unknown"
+            )
+        except Exception:
+            pass  # Hooks are best-effort
+    
     return config_path
 
 
@@ -2220,21 +2239,55 @@ def _prompt_model_selection(model_ids: List[str], current_model: str = "") -> Op
             return None
 
 
-def _save_model_choice(model_id: str) -> None:
+def _save_model_choice(model_id: str, old_model_id: str = "", old_provider: str = "") -> None:
     """Save the selected model to config.yaml (single source of truth).
 
     The model is stored in config.yaml only — NOT in .env.  This avoids
     conflicts in multi-agent setups where env vars would stomp each other.
+    
+    Fires on_model_change hook with old and new model/provider info.
     """
     from hermes_cli.config import save_config, load_config
+    from hermes_cli.plugins import invoke_hook
 
     config = load_config()
+    
+    # Get current model/provider before saving (for hook context)
+    old_model = old_model_id or ""
+    old_prov = old_provider or ""
+    new_prov = ""
+    
+    if not old_model:
+        old_model_cfg = config.get("model", {})
+        if isinstance(old_model_cfg, dict):
+            old_model = old_model_cfg.get("default", "")
+        elif isinstance(old_model_cfg, str):
+            old_model = old_model_cfg
+    
+    if not old_prov:
+        old_prov = config.get("model", {}).get("provider", "") if isinstance(config.get("model"), dict) else ""
+    
     # Always use dict format so provider/base_url can be stored alongside
     if isinstance(config.get("model"), dict):
         config["model"]["default"] = model_id
+        new_prov = config["model"].get("provider", "")
     else:
         config["model"] = {"default": model_id}
+    
     save_config(config)
+    
+    # Fire on_model_change hook with old and new model info
+    try:
+        invoke_hook(
+            "on_model_change",
+            old_model=old_model or "unknown",
+            new_model=model_id,
+            old_provider=old_prov or "unknown",
+            new_provider=new_prov or "unknown"
+        )
+    except Exception:
+        # Hooks are best-effort; don't fail model save if hook fails
+        pass
 
 
 def login_command(args) -> None:
