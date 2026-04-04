@@ -479,9 +479,18 @@ class HermesACPAgent(acp.Agent):
         except Exception:
             logger.debug("Provider detection failed, using model as-is", exc_info=True)
 
+        def _normalize_hook_value(value: object) -> str:
+            if isinstance(value, str):
+                normalized = value.strip()
+                return normalized or "unknown"
+            if value is None:
+                return "unknown"
+            normalized = str(value).strip()
+            return normalized or "unknown"
+
         # Capture previous state for hook context.
-        old_model = state.model or getattr(state.agent, "model", "unknown")
-        old_provider = getattr(state.agent, "provider", None) or current_provider or "unknown"
+        old_model_raw = state.model or getattr(state.agent, "model", "unknown")
+        old_provider_raw = getattr(state.agent, "provider", None) or current_provider or "unknown"
 
         # Apply model/provider switch first.
         state.model = new_model
@@ -498,27 +507,31 @@ class HermesACPAgent(acp.Agent):
             provider_label = provider_from_agent
         else:
             provider_label = target_provider or current_provider
-        final_provider = provider_label or "unknown"
+
+        old_model_for_hook = _normalize_hook_value(old_model_raw)
+        new_model_for_hook = _normalize_hook_value(new_model)
+        old_provider_for_hook = _normalize_hook_value(old_provider_raw)
+        final_provider = _normalize_hook_value(provider_label)
 
         # Fire on_model_change hook only when model or provider actually changed,
         # and only after the switch has succeeded.
-        model_changed = old_model != new_model
-        provider_changed = old_provider != final_provider
+        model_changed = old_model_for_hook != new_model_for_hook
+        provider_changed = old_provider_for_hook != final_provider
         if model_changed or provider_changed:
             try:
                 from hermes_cli.plugins import invoke_hook
                 invoke_hook(
                     "on_model_change",
-                    old_model=old_model,
-                    new_model=new_model,
-                    old_provider=old_provider,
+                    old_model=old_model_for_hook,
+                    new_model=new_model_for_hook,
+                    old_provider=old_provider_for_hook,
                     new_provider=final_provider,
                 )
             except Exception:
                 logger.debug("Failed to invoke on_model_change hook in ACP /model", exc_info=True)  # Hooks are best-effort
 
-        logger.info("Session %s: model switched to %s", state.session_id, new_model)
-        return f"Model switched to: {new_model}\nProvider: {provider_label}"
+        logger.info("Session %s: model switched to %s", state.session_id, new_model_for_hook)
+        return f"Model switched to: {new_model_for_hook}\nProvider: {final_provider}"
 
     def _cmd_tools(self, args: str, state: SessionState) -> str:
         try:

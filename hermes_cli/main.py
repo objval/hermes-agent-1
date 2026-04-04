@@ -3317,7 +3317,6 @@ def _run_post_update_scripts(
                 cmd = ["ruby", str(script)]
             
             # Run script with output visible to console (no capture_output)
-            scripts_executed += 1
             result = subprocess.run(
                 cmd,
                 cwd=PROJECT_ROOT,
@@ -3325,7 +3324,8 @@ def _run_post_update_scripts(
                 text=True,
                 timeout=300,  # 5 minute timeout per script
             )
-            
+            scripts_executed += 1
+
             if result.returncode == 0:
                 logger.debug("Post-update script %s completed successfully", script_name)
             else:
@@ -3335,7 +3335,11 @@ def _run_post_update_scripts(
                     result.returncode,
                 )
         except subprocess.TimeoutExpired:
+            # Process started but exceeded timeout; count as an execution attempt.
+            scripts_executed += 1
             logger.warning("Post-update script %s timed out after 5 minutes", script_name)
+        except FileNotFoundError as exc:
+            logger.warning("Post-update script %s could not start (%s)", script_name, exc)
         except Exception as exc:
             logger.debug("Post-update script %s failed: %s", script_name, exc)
 

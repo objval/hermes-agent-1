@@ -163,7 +163,7 @@ class TestPostUpdateHook:
             script.chmod(0o755)
 
             # Run scripts
-            _run_post_update_scripts(
+            executed = _run_post_update_scripts(
                 update_status="success",
                 prev_version="abc",
                 new_version="def",
@@ -175,6 +175,7 @@ class TestPostUpdateHook:
             call_args = mock_subprocess.call_args
             assert call_args[0][0][0] == "bash"
             assert "01-test.sh" in call_args[0][0][1]
+            assert executed == 1
             
             # Verify environment variables were set
             env = call_args[1]["env"]
@@ -182,6 +183,30 @@ class TestPostUpdateHook:
             assert env["HERMES_PREV_VERSION"] == "abc"
             assert env["HERMES_NEW_VERSION"] == "def"
             assert env["HERMES_COMMITS_COUNT"] == "1"
+
+    @patch("hermes_cli.profiles._get_default_hermes_home")
+    @patch("subprocess.run", side_effect=FileNotFoundError("node"))
+    def test_script_execution_count_skips_failed_launch(self, _mock_subprocess, mock_home):
+        """Failed interpreter launch should not count as executed script."""
+        from hermes_cli.main import _run_post_update_scripts
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scripts_dir = Path(tmpdir) / "post-update.d"
+            scripts_dir.mkdir()
+            mock_home.return_value = Path(tmpdir)
+
+            script = scripts_dir / "01-test.js"
+            script.write_text("console.log('test')")
+            script.chmod(0o755)
+
+            executed = _run_post_update_scripts(
+                update_status="success",
+                prev_version="abc",
+                new_version="def",
+                commits_count=1,
+            )
+
+            assert executed == 0
 
     @patch("hermes_cli.profiles._get_default_hermes_home")
     def test_non_executable_scripts_skipped(self, mock_home):
@@ -332,6 +357,40 @@ class TestGatewayModelChangeHook:
                 assert call_kwargs["new_model"] == "claude-opus-4"
                 assert call_kwargs["old_provider"] == "openai"
                 assert call_kwargs["new_provider"] == "anthropic"
+
+    @patch("hermes_cli.plugins.invoke_hook")
+    def test_gateway_hook_normalizes_values_to_strings(self, mock_invoke):
+        """Gateway hook payload should always use non-empty strings."""
+        from acp_adapter.server import HermesACPAgent
+
+        state = MagicMock()
+        state.model = ""  # falsy state.model
+        state.agent = MagicMock()
+        state.agent.model = None
+        state.agent.provider = None
+        state.session_id = "test-session"
+        state.cwd = "/tmp"
+
+        session_manager = MagicMock()
+        new_agent = MagicMock()
+        new_agent.provider = ""  # force fallback to target/current provider
+        session_manager._make_agent.return_value = new_agent
+
+        handler = HermesACPAgent.__new__(HermesACPAgent)
+        handler.session_manager = session_manager
+
+        with patch("hermes_cli.models.parse_model_input", return_value=("anthropic", "claude-opus-4")):
+            with patch("hermes_cli.models.detect_provider_for_model", return_value=None):
+                handler._cmd_model("claude-opus-4", state)
+
+        mock_invoke.assert_called_once()
+        call_kwargs = mock_invoke.call_args[1]
+        assert call_kwargs["old_model"] == "unknown"
+        assert call_kwargs["new_model"] == "claude-opus-4"
+        assert call_kwargs["old_provider"] == "openrouter"
+        assert call_kwargs["new_provider"] == "anthropic"
+        assert all(isinstance(call_kwargs[k], str) for k in ["old_model", "new_model", "old_provider", "new_provider"])
+        assert all(call_kwargs[k] for k in ["old_model", "new_model", "old_provider", "new_provider"])
 
 
 if __name__ == "__main__":
